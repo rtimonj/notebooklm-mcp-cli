@@ -34,6 +34,8 @@ dependencies = [
     "platformdirs>=4.0.0,<5.0",
     "fastmcp>=2.0.0,<4.0",
     "pyyaml>=6.0,<7.0",
+    "cryptography>=42.0,<47.0",  # Fernet encryption of credentials at rest
+    "keyring>=25.0,<26.0",  # System keyring storage for the encryption key
     "typing_extensions>=4.4.0; python_version < '3.12'",
 ]
 

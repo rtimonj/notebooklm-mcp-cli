@@ -9,13 +9,13 @@ Storage location: ~/.notebooklm-mcp-cli/ (unified for CLI and MCP)
 import contextlib
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from notebooklm_tools.utils.config import get_base_url
+from notebooklm_tools.utils.credential_store import CredentialStoreError
 
 # Use logging instead of print to avoid corrupting MCP stdio protocol
 logger = logging.getLogger(__name__)
@@ -117,8 +117,9 @@ def load_cached_tokens() -> AuthTokens | None:
         return None
 
     try:
-        with open(cache_path, encoding="utf-8") as f:
-            data = json.load(f)
+        from notebooklm_tools.utils.credential_store import read_secure_json
+
+        data = read_secure_json(cache_path)
         tokens = AuthTokens.from_dict(data)
 
         # Just warn if tokens are old, but still return them
@@ -128,6 +129,9 @@ def load_cached_tokens() -> AuthTokens | None:
 
         return tokens
     except (json.JSONDecodeError, KeyError, TypeError) as e:
+        logger.warning(f"Failed to load cached tokens: {e}")
+        return None
+    except CredentialStoreError as e:
         logger.warning(f"Failed to load cached tokens: {e}")
         return None
 
@@ -143,15 +147,10 @@ def save_tokens_to_cache(tokens: AuthTokens, silent: bool = False) -> None:
         tokens: AuthTokens to save
         silent: If True, don't print confirmation message (for auto-updates)
     """
+    from notebooklm_tools.utils.credential_store import write_secure_json
+
     cache_path = get_cache_path()
-    fd = os.open(str(cache_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        f = os.fdopen(fd, "w", encoding="utf-8")
-    except BaseException:
-        os.close(fd)
-        raise
-    with f:
-        json.dump(tokens.to_dict(), f, indent=2)
+    write_secure_json(cache_path, tokens.to_dict())
 
     # Also update the default profile so load_cached_tokens() (which
     # checks profiles first) picks up the same tokens.
@@ -393,10 +392,12 @@ class AuthManager:
             raise ProfileNotFoundError(self.profile_name)
 
         try:
-            cookies = json.loads(self.cookies_file.read_text(encoding="utf-8"))
+            from notebooklm_tools.utils.credential_store import read_secure_json
+
+            cookies = read_secure_json(self.cookies_file)
             metadata = {}
             if self.metadata_file.exists():
-                metadata = json.loads(self.metadata_file.read_text(encoding="utf-8"))
+                metadata = read_secure_json(self.metadata_file)
 
             self._profile = Profile(
                 name=self.profile_name,
@@ -436,11 +437,16 @@ class AuthManager:
         from datetime import datetime
 
         from notebooklm_tools.core.exceptions import AccountMismatchError
+        from notebooklm_tools.utils.credential_store import (
+            CredentialStoreError,
+            read_secure_json,
+            write_secure_json,
+        )
 
         # Guard: check for account mismatch before overwriting
         if not force and email and self.metadata_file.exists():
             try:
-                existing_metadata = json.loads(self.metadata_file.read_text(encoding="utf-8"))
+                existing_metadata = read_secure_json(self.metadata_file, migrate=False)
                 stored_email = existing_metadata.get("email")
                 if stored_email and stored_email != email:
                     raise AccountMismatchError(
@@ -448,8 +454,8 @@ class AuthManager:
                         new_email=email,
                         profile_name=self.profile_name,
                     )
-            except (json.JSONDecodeError, KeyError):
-                pass  # Corrupted metadata, allow overwrite
+            except (json.JSONDecodeError, KeyError, CredentialStoreError):
+                pass  # Corrupted or unreadable metadata, allow overwrite
 
         from notebooklm_tools.utils.config import safe_mkdir
 
@@ -458,17 +464,10 @@ class AuthManager:
         # Set restrictive permissions on the directory
         self.profile_dir.chmod(0o700)
 
-        # Save cookies with restrictive permissions from creation
-        fd = os.open(str(self.cookies_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-        except BaseException:
-            os.close(fd)
-            raise
-        with f:
-            json.dump(cookies, f, indent=2, ensure_ascii=False)
+        # Save cookies encrypted at rest (0o600 from creation)
+        write_secure_json(self.cookies_file, cookies)
 
-        # Save metadata with restrictive permissions from creation
+        # Save metadata encrypted at rest (contains csrf_token/session_id)
         metadata = {
             "csrf_token": csrf_token,
             "session_id": session_id,
@@ -476,14 +475,7 @@ class AuthManager:
             "build_label": build_label,
             "last_validated": datetime.now().isoformat(),
         }
-        fd = os.open(str(self.metadata_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            f = os.fdopen(fd, "w", encoding="utf-8")
-        except BaseException:
-            os.close(fd)
-            raise
-        with f:
-            json.dump(metadata, f, indent=2, ensure_ascii=False)
+        write_secure_json(self.metadata_file, metadata)
 
         self._profile = Profile(
             name=self.profile_name,
