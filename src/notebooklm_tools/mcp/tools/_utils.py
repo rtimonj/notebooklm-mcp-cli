@@ -217,10 +217,25 @@ def logged_tool() -> Callable[[Callable[P, Any]], Callable[P, Any]]:
     return decorator
 
 
-def register_all_tools(mcp: Any) -> None:
-    """Register all collected tools with the MCP instance."""
-    for _, wrapper in _tool_registry:
+def register_all_tools(mcp: Any, exclude: set[str] | None = None) -> list[str]:
+    """Register collected tools with the MCP instance.
+
+    Args:
+        mcp: The FastMCP instance.
+        exclude: Tool names to skip entirely. Excluded tools are never
+            registered, so they don't appear in ``tools/list`` at all.
+
+    Returns:
+        The names of the tools that were actually registered.
+    """
+    excluded = exclude or set()
+    registered: list[str] = []
+    for name, wrapper in _tool_registry:
+        if name in excluded:
+            continue
         mcp.tool()(wrapper)
+        registered.append(name)
+    return registered
 
 
 # Essential cookies for NotebookLM API authentication
