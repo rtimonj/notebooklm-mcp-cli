@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,11 @@ DISABLE_ENCRYPTION_ENV = "NOTEBOOKLM_DISABLE_ENCRYPTION"
 _cached_key: bytes | None = None
 _key_lookup_done = False
 _plaintext_warning_emitted = False
+
+# Serializes first-use key generation so concurrent callers (the MCP server is
+# multi-threaded) cannot each generate a different key and clobber each other's
+# in the keyring, which would orphan files encrypted with the losing key.
+_key_lock = threading.Lock()
 
 
 class CredentialStoreError(Exception):
@@ -63,27 +69,37 @@ def get_encryption_key() -> bytes | None:
     if os.environ.get(DISABLE_ENCRYPTION_ENV):
         return None
 
+    # Fast path: lookup already done, no lock needed.
     if _key_lookup_done:
         return _cached_key
 
-    try:
-        import keyring
-        from cryptography.fernet import Fernet
+    # Slow path: serialize under the lock and re-check. Double-checked locking
+    # so only one thread ever generates/stores a key; the rest reuse it.
+    with _key_lock:
+        if _key_lookup_done:
+            return _cached_key
 
-        stored = keyring.get_password(KEYRING_SERVICE, KEYRING_KEY_NAME)
-        if stored:
-            _cached_key = stored.encode("ascii")
-        else:
-            new_key = Fernet.generate_key()
-            keyring.set_password(KEYRING_SERVICE, KEYRING_KEY_NAME, new_key.decode("ascii"))
-            _cached_key = new_key
-            logger.info("Generated new credential encryption key in system keyring")
-    except Exception as e:
-        logger.debug(f"System keyring unavailable: {type(e).__name__}: {e}")
-        _cached_key = None
+        try:
+            import keyring
+            from cryptography.fernet import Fernet
 
-    _key_lookup_done = True
-    return _cached_key
+            # Re-read the keyring inside the lock before generating: if another
+            # thread (or process) already stored a key, adopt it instead of
+            # overwriting it with a fresh one.
+            stored = keyring.get_password(KEYRING_SERVICE, KEYRING_KEY_NAME)
+            if stored:
+                _cached_key = stored.encode("ascii")
+            else:
+                new_key = Fernet.generate_key()
+                keyring.set_password(KEYRING_SERVICE, KEYRING_KEY_NAME, new_key.decode("ascii"))
+                _cached_key = new_key
+                logger.info("Generated new credential encryption key in system keyring")
+        except Exception as e:
+            logger.debug(f"System keyring unavailable: {type(e).__name__}: {e}")
+            _cached_key = None
+
+        _key_lookup_done = True
+        return _cached_key
 
 
 def is_encrypted(data: Any) -> bool:

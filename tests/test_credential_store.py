@@ -189,6 +189,54 @@ def test_get_encryption_key_creates_and_reuses(monkeypatch):
     assert key2 == key1  # reused, not regenerated
 
 
+def test_get_encryption_key_concurrent_access_generates_one_key(monkeypatch):
+    """Two threads hitting first-use together must produce a single shared key."""
+    import threading
+    import time
+
+    monkeypatch.delenv(credential_store.DISABLE_ENCRYPTION_ENV, raising=False)
+    credential_store.reset_cache()
+
+    store: dict[tuple[str, str], str] = {}
+    set_calls = 0
+    counter_lock = threading.Lock()
+
+    class SlowKeyring:
+        @staticmethod
+        def get_password(service, name):
+            time.sleep(0.02)  # widen the race window
+            return store.get((service, name))
+
+        @staticmethod
+        def set_password(service, name, value):
+            nonlocal set_calls
+            with counter_lock:
+                set_calls += 1
+            store[(service, name)] = value
+
+    monkeypatch.setitem(__import__("sys").modules, "keyring", SlowKeyring)
+
+    results: list[bytes | None] = []
+    results_lock = threading.Lock()
+    barrier = threading.Barrier(2)
+
+    def worker():
+        barrier.wait()  # start both threads as simultaneously as possible
+        key = credential_store.get_encryption_key()
+        with results_lock:
+            results.append(key)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert set_calls == 1, "key must be generated/stored exactly once"
+    assert results[0] is not None
+    assert results[0] == results[1], "both threads must observe the same key"
+
+
 def test_get_encryption_key_keyring_unavailable(monkeypatch):
     monkeypatch.delenv(credential_store.DISABLE_ENCRYPTION_ENV, raising=False)
     credential_store.reset_cache()
