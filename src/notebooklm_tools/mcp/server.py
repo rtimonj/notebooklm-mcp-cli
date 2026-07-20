@@ -20,6 +20,7 @@ Tool Modules:
 import argparse
 import logging
 import os
+import sys
 
 from fastmcp import FastMCP
 from starlette.requests import Request
@@ -74,9 +75,17 @@ async def health_check(request: Request) -> JSONResponse:
     )
 
 
+# Populated by _register_tools() so main() can print a startup summary.
+_active_tools_mode: str = ""
+_registered_tool_count: int = 0
+
+
 def _register_tools() -> None:
     """Import and register all tools from the modular tools package."""
+    global _active_tools_mode, _registered_tool_count
+
     # Import all tool modules to populate the registry
+    from . import tool_groups
     from .tools import (  # noqa: F401
         auth,
         batch,
@@ -97,13 +106,43 @@ def _register_tools() -> None:
     )
     from .tools._utils import register_all_tools
 
-    # Register collected tools with mcp
-    register_all_tools(mcp)
+    # Resolve the tool-exposure mode (readonly/standard/full). Excluded tools
+    # are never registered — they don't appear in tools/list at all. Applies
+    # to the MCP server only; the `nlm` CLI is never gated.
+    mode = tool_groups.resolve_mode()
+    try:
+        exclude = tool_groups.mode_exclusions(mode)
+    except ValueError as e:
+        print(
+            f"SECURITY ERROR: {e}\n"
+            "Set NLM_TOOLS_MODE (or [tools].mode in config.toml) to one of: "
+            f"{', '.join(tool_groups.VALID_MODES)}.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
-    # Optionally hide tool groups/tools via environment variables (opt-in).
+    registered = register_all_tools(mcp, exclude=exclude)
+    _active_tools_mode = mode
+    _registered_tool_count = len(registered)
+
+    # Optionally hide additional tool groups/tools via environment variables
+    # (opt-in). Note: this can only hide tools that the mode already exposed;
+    # NOTEBOOKLM_ENABLED_TOOLS cannot resurrect a tool excluded by the mode.
+    tool_groups.apply(mcp)
+
+
+def _print_tools_mode_banner() -> None:
+    """Print the active tool-exposure mode and count to stderr."""
     from . import tool_groups
 
-    tool_groups.apply(mcp)
+    total = len(tool_groups.ALL_TOOLS)
+    msg = (
+        f"NotebookLM MCP: tools mode '{_active_tools_mode}' — "
+        f"{_registered_tool_count}/{total} tools exposed."
+    )
+    if _active_tools_mode != tool_groups.MODE_FULL:
+        msg += " Set NLM_TOOLS_MODE=full to enable sharing/deletion tools."
+    print(msg, file=sys.stderr)
 
 
 # Register tools on import
@@ -210,11 +249,13 @@ Examples:
 
     set_query_timeout(args.query_timeout)
 
+    # Announce the active tool-exposure mode on stderr (never stdout, which is
+    # the JSON-RPC channel for stdio transport).
+    _print_tools_mode_banner()
+
     # Run server with appropriate transport
     # show_banner=False prevents Rich box-drawing output that can corrupt
     # the JSON-RPC protocol on Windows (especially with non-English locales)
-    import sys
-
     if args.transport == "stdio":
 
         class _StdoutToStderrWrapper:

@@ -99,6 +99,114 @@ TOOL_GROUPS: dict[str, set[str]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Security tiers (used by the NLM_TOOLS_MODE / [tools].mode gate)
+# ---------------------------------------------------------------------------
+#
+# Every registered tool belongs to exactly one tier. Modes are cumulative:
+#   readonly → READ
+#   standard → READ + WRITE
+#   full     → READ + WRITE + DANGEROUS
+#
+# Excluded tools are NOT registered with the MCP server (they never appear in
+# tools/list), so a smaller mode both saves context and removes the temptation
+# for an agent to call a tool it shouldn't. This is stronger than the env-var
+# gating below, which only hides already-registered tools.
+
+# Read-only: listing, querying, describing, status, local downloads.
+TIER_READ: set[str] = {
+    "notebook_list",
+    "notebook_get",
+    "notebook_describe",
+    "source_list_drive",
+    "source_describe",
+    "source_get_content",
+    "notebook_query",
+    "notebook_query_start",
+    "notebook_query_status",
+    "cross_notebook_query",
+    "notebook_share_status",
+    "studio_status",
+    "download_artifact",
+    "server_info",
+    "refresh_auth",
+}
+
+# Normal writes: create/rename, add sources, generate artifacts, notes/labels.
+# Excludes public sharing, collaborator invites, and deletions.
+TIER_WRITE: set[str] = {
+    "notebook_create",
+    "notebook_rename",
+    "source_add",
+    "source_rename",
+    "source_sync_drive",
+    "chat_configure",
+    "research_start",
+    "research_status",  # auto_import=True can import sources → not read-only
+    "research_import",
+    "studio_create",
+    "studio_revise",
+    "export_artifact",
+    "note",
+    "label",
+    "tag",
+    "pipeline",
+    "save_auth_tokens",
+}
+
+# Dangerous: public exposure, mass invites, irreversible deletion.
+# `batch` lives here because action=delete removes notebooks irreversibly.
+TIER_DANGEROUS: set[str] = {
+    "notebook_share_public",
+    "notebook_share_invite",
+    "notebook_share_batch",
+    "notebook_delete",
+    "source_delete",
+    "studio_delete",
+    "batch",
+}
+
+# Tools available in each mode (cumulative).
+MODE_READONLY = "readonly"
+MODE_STANDARD = "standard"
+MODE_FULL = "full"
+VALID_MODES = (MODE_READONLY, MODE_STANDARD, MODE_FULL)
+
+_MODE_TOOLS: dict[str, set[str]] = {
+    MODE_READONLY: TIER_READ,
+    MODE_STANDARD: TIER_READ | TIER_WRITE,
+    MODE_FULL: TIER_READ | TIER_WRITE | TIER_DANGEROUS,
+}
+
+ALL_TOOLS: set[str] = TIER_READ | TIER_WRITE | TIER_DANGEROUS
+
+
+def tools_for_mode(mode: str) -> set[str]:
+    """Return the set of tool names exposed in the given mode.
+
+    Raises:
+        ValueError: if the mode is not one of readonly/standard/full.
+    """
+    try:
+        return _MODE_TOOLS[mode]
+    except KeyError as e:
+        raise ValueError(
+            f"Invalid tools mode {mode!r}. Valid values: {', '.join(VALID_MODES)}."
+        ) from e
+
+
+def mode_exclusions(mode: str) -> set[str]:
+    """Return the tool names to exclude (not register) for the given mode."""
+    return ALL_TOOLS - tools_for_mode(mode)
+
+
+def resolve_mode() -> str:
+    """Resolve the active tools mode from config (env override applied there)."""
+    from notebooklm_tools.utils.config import get_config
+
+    return get_config().tools.mode
+
+
 def _env_names(var: str) -> set[str]:
     raw = os.environ.get(var, "")
     return {part.strip() for part in raw.split(",") if part.strip()}

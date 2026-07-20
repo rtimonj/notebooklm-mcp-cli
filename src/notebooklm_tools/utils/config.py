@@ -410,11 +410,32 @@ class AuthConfig(BaseModel):
     default_profile: str = Field(default="default", description="Default profile name")
 
 
+class ToolsConfig(BaseModel):
+    """MCP tool-exposure configuration.
+
+    Controls which MCP tools the server registers. Applies to the MCP server
+    only — the `nlm` CLI is driven directly by a human and is never gated.
+
+    Modes:
+    - ``readonly``: only read/query tools (list, get, describe, status, download).
+    - ``standard`` (default): read tools plus normal writes (create, rename,
+      add sources, generate artifacts). Excludes public sharing, collaborator
+      invites, and deletions.
+    - ``full``: every tool, including the dangerous ones.
+    """
+
+    mode: str = Field(
+        default="standard",
+        description="MCP tool exposure mode: readonly, standard, or full",
+    )
+
+
 class Config(BaseModel):
     """Main configuration model."""
 
     output: OutputConfig = Field(default_factory=OutputConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    tools: ToolsConfig = Field(default_factory=ToolsConfig)
 
 
 def load_config() -> Config:
@@ -445,6 +466,9 @@ def load_config() -> Config:
     if profile := os.environ.get("NLM_PROFILE"):
         config_data.setdefault("auth", {})["default_profile"] = profile
 
+    if tools_mode := os.environ.get("NLM_TOOLS_MODE"):
+        config_data.setdefault("tools", {})["mode"] = tools_mode
+
     return Config(**config_data)
 
 
@@ -471,6 +495,10 @@ def _config_to_toml(config: Config) -> str:
     lines.append("[auth]")
     lines.append(f'browser = "{config.auth.browser}"')
     lines.append(f'default_profile = "{config.auth.default_profile}"')
+    lines.append("")
+
+    lines.append("[tools]")
+    lines.append(f'mode = "{config.tools.mode}"')
     lines.append("")
 
     return "\n".join(lines)
