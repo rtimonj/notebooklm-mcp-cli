@@ -238,6 +238,16 @@ def login_callback(
         "--wsl",
         help="Launch Windows Chrome from WSL (fixes terminal corruption on WSL2)",
     ),
+    login_timeout: int = typer.Option(
+        300,
+        "--login-timeout",
+        envvar="NLM_LOGIN_TIMEOUT",
+        help=(
+            "Max seconds to wait for interactive Google sign-in before closing "
+            "the browser and aborting. Shorter values reduce how long the CDP "
+            "debugging port stays open."
+        ),
+    ),
 ) -> None:
     """
     Authenticate with NotebookLM.
@@ -320,16 +330,18 @@ def login_callback(
         except (NLMError, ClientAuthenticationError):
             pass
 
+    from notebooklm_tools.utils.cdp import (
+        extract_cookies_via_cdp,
+        extract_cookies_via_existing_cdp,
+        get_browser_display_name,
+        terminate_chrome,
+    )
+
+    # Tracks whether we launched a Chrome we are responsible for closing.
+    # Declared before the try so the finally can always read it.
+    launched_local_chrome = False
+
     try:
-        from notebooklm_tools.utils.cdp import (
-            extract_cookies_via_cdp,
-            extract_cookies_via_existing_cdp,
-            get_browser_display_name,
-            terminate_chrome,
-        )
-
-        launched_local_chrome = False
-
         # Default cdp_url for the builtin provider — used to detect when the
         # user explicitly passes their own --cdp-url value.
         _BUILTIN_CDP_DEFAULT = "http://127.0.0.1:18800"
@@ -430,7 +442,7 @@ def login_callback(
                     result = extract_cookies_via_existing_cdp(
                         cdp_url=wsl_cdp_url,
                         wait_for_login=True,
-                        login_timeout=300,
+                        login_timeout=login_timeout,
                     )
                 finally:
                     # Always terminate Windows Chrome
@@ -449,7 +461,7 @@ def login_callback(
             result = extract_cookies_via_existing_cdp(
                 cdp_url=cdp_url,
                 wait_for_login=True,
-                login_timeout=300,
+                login_timeout=login_timeout,
             )
         else:
             # Default: builtin CDP mode - managed Chrome profile
@@ -492,7 +504,7 @@ def login_callback(
             result = extract_cookies_via_cdp(
                 auto_launch=True,
                 wait_for_login=True,
-                login_timeout=300,
+                login_timeout=login_timeout,
                 profile_name=profile,
                 clear_profile=clear,
             )
@@ -557,7 +569,7 @@ def login_callback(
                 result = extract_cookies_via_cdp(
                     auto_launch=True,
                     wait_for_login=True,
-                    login_timeout=300,
+                    login_timeout=login_timeout,
                     profile_name=profile,
                     clear_profile=True,
                 )
@@ -606,6 +618,14 @@ def login_callback(
         if e.hint:
             console.print(f"\n[dim]Hint: {e.hint}[/dim]")
         raise typer.Exit(1) from e
+    finally:
+        # Safety net: never leave a launched Chrome's debugging port open,
+        # including on the error paths above. No-op when the success path
+        # already closed it (terminate_chrome returns False with no tracked
+        # process) or when Chrome belongs to someone else (external CDP).
+        if launched_local_chrome:
+            with contextlib.suppress(Exception):
+                terminate_chrome()
 
 
 @profile_app.command("list")
