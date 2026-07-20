@@ -352,6 +352,11 @@ class AuthManager:
     """Manages authentication profiles and credentials (for CLI multi-account support)."""
 
     def __init__(self, profile_name: str = "default") -> None:
+        # Reject path-traversal / separator names early with a clear error,
+        # before any file path is derived from the name.
+        from notebooklm_tools.utils.config import validate_profile_name
+
+        validate_profile_name(profile_name)
         self.profile_name = profile_name
         self._profile: Profile | None = None
 

@@ -7,6 +7,7 @@ Supports automatic migration from old locations:
 """
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -108,8 +109,29 @@ def get_profiles_dir() -> Path:
     return profiles_dir
 
 
+# Profile names become directory names under profiles/ (and chrome-profiles/),
+# so they must not contain path separators or traversal sequences that could
+# escape the storage dir. Allow only a conservative, filesystem-safe charset.
+_PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def validate_profile_name(profile_name: str) -> str:
+    """Return the name unchanged if valid, else raise ValueError.
+
+    Rejects empty names, ``.``/``..``, path separators, and any character
+    outside ``[A-Za-z0-9._-]`` — closing off path traversal via profile names.
+    """
+    if not profile_name or profile_name in {".", ".."} or not _PROFILE_NAME_RE.match(profile_name):
+        raise ValueError(
+            f"Invalid profile name {profile_name!r}. Use only letters, digits, "
+            "'.', '_' or '-' (no path separators or '..')."
+        )
+    return profile_name
+
+
 def get_profile_dir(profile_name: str = "default") -> Path:
     """Get directory for a specific profile."""
+    validate_profile_name(profile_name)
     profile_dir = get_profiles_dir() / profile_name
     safe_mkdir(profile_dir, parents=True)
     return profile_dir
@@ -125,6 +147,7 @@ def get_chrome_profile_dir(profile_name: str = "default") -> Path:
     chrome-profile/ directory if it exists, keeping single-profile
     users' experience unchanged.
     """
+    validate_profile_name(profile_name)
     storage = get_storage_dir()
 
     # Backward compatibility: use old location for default profile if it exists
