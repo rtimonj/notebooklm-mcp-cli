@@ -5,6 +5,7 @@ import os
 import pytest
 
 from notebooklm_tools.core.cookie_rotation import DISABLE_ROTATE_COOKIES_ENV
+from notebooklm_tools.utils import credential_store
 
 
 @pytest.fixture(autouse=True)
@@ -35,3 +36,19 @@ def _disable_cookie_rotation(monkeypatch):
     monkeypatch.delenv.
     """
     monkeypatch.setenv(DISABLE_ROTATE_COOKIES_ENV, "1")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_keyring(monkeypatch):
+    """Keep tests away from the developer's real system keyring.
+
+    Credential encryption looks up its Fernet key in the OS keyring; without
+    this guard, running the suite on a desktop session would create a real key
+    in GNOME Keyring/Keychain and write encrypted fixtures that plaintext-
+    asserting tests can't read. Tests that exercise encryption itself
+    monkeypatch credential_store.get_encryption_key with an in-memory key.
+    """
+    monkeypatch.setenv(credential_store.DISABLE_ENCRYPTION_ENV, "1")
+    credential_store.reset_cache()
+    yield
+    credential_store.reset_cache()

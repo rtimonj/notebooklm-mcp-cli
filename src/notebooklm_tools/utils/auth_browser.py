@@ -1,6 +1,5 @@
 """Browser/backend selection for interactive and headless authentication."""
 
-import json
 from typing import Any
 
 from notebooklm_tools.core.exceptions import AuthenticationError
@@ -73,7 +72,9 @@ def _get_saved_browser_backend(profile_name: str) -> str | None:
     if not metadata_file.exists():
         return None
     try:
-        metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+        from notebooklm_tools.utils.credential_store import read_secure_json
+
+        metadata = read_secure_json(metadata_file, migrate=False)
     except Exception:
         return None
     value = metadata.get("browser_backend")
