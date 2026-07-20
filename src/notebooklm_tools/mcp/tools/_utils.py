@@ -48,6 +48,25 @@ def error_result(
     return result
 
 
+def deletion_blocked_result(entity: str) -> ResultDict | None:
+    """Return an error payload if deletion is not allowed in the active mode.
+
+    Consolidated tools (``note``, ``label``) stay available in the ``standard``
+    tier for their non-destructive actions, but their ``delete`` sub-action is
+    dangerous and must only run in ``full`` mode. Returns ``None`` when deletion
+    is allowed so callers can proceed.
+    """
+    from notebooklm_tools.mcp import tool_groups
+
+    mode = tool_groups.resolve_mode()
+    if tool_groups.deletion_allowed(mode):
+        return None
+    return error_result(
+        f"{entity} deletion is disabled in tools mode '{mode}'.",
+        hint='Set NLM_TOOLS_MODE=full (or [tools].mode = "full") to allow deletion.',
+    )
+
+
 # Global state
 _client: NotebookLMClient | None = None
 _client_lock = threading.Lock()

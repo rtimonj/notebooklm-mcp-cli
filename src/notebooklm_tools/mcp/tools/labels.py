@@ -2,7 +2,14 @@
 
 from ...services import ServiceError, ValidationError
 from ...services import labels as labels_service
-from ._utils import ResultDict, coerce_list, error_result, get_client, logged_tool
+from ._utils import (
+    ResultDict,
+    coerce_list,
+    deletion_blocked_result,
+    error_result,
+    get_client,
+    logged_tool,
+)
 
 
 @logged_tool()
@@ -74,6 +81,13 @@ def label(
             "status": "error",
             "error": f"Unknown action '{action}'. Valid actions: {', '.join(valid_actions)}",
         }
+
+    # Gate the dangerous delete sub-action by tools mode before any client/auth
+    # work: deletion is only permitted in 'full'.
+    if action == "delete":
+        blocked = deletion_blocked_result("Label")
+        if blocked is not None:
+            return blocked
 
     try:
         client = get_client()

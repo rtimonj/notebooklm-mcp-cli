@@ -189,6 +189,77 @@ def test_registration_count_per_mode(mode, expected_count):
 # ---------------------------------------------------------------------------
 
 
+def test_deletion_allowed_only_in_full():
+    assert tool_groups.deletion_allowed("full") is True
+    assert tool_groups.deletion_allowed("standard") is False
+    assert tool_groups.deletion_allowed("readonly") is False
+
+
+@pytest.mark.parametrize("mode", ["readonly", "standard"])
+def test_note_delete_blocked_outside_full(monkeypatch, mode):
+    from notebooklm_tools.mcp.tools import notes
+
+    monkeypatch.setattr(tool_groups, "resolve_mode", lambda: mode)
+    # get_client must never be reached for a blocked delete.
+    monkeypatch.setattr(
+        notes, "get_client", lambda: (_ for _ in ()).throw(AssertionError("client built"))
+    )
+
+    result = notes.note(notebook_id="nb", action="delete", note_id="n1", confirm=True)
+    assert result["status"] == "error"
+    assert "deletion is disabled" in result["error"]
+    assert "NLM_TOOLS_MODE=full" in result["hint"]
+
+
+@pytest.mark.parametrize("mode", ["readonly", "standard"])
+def test_label_delete_blocked_outside_full(monkeypatch, mode):
+    from notebooklm_tools.mcp.tools import labels
+
+    monkeypatch.setattr(tool_groups, "resolve_mode", lambda: mode)
+    monkeypatch.setattr(
+        labels, "get_client", lambda: (_ for _ in ()).throw(AssertionError("client built"))
+    )
+
+    result = labels.label(notebook_id="nb", action="delete", label_id="l1", confirm=True)
+    assert result["status"] == "error"
+    assert "deletion is disabled" in result["error"]
+
+
+def test_note_delete_reaches_service_in_full(monkeypatch):
+    """In full mode the guard is transparent; delete proceeds to the service."""
+    from notebooklm_tools.mcp.tools import notes
+
+    monkeypatch.setattr(tool_groups, "resolve_mode", lambda: "full")
+    monkeypatch.setattr(notes, "get_client", lambda: object())
+    called = {}
+
+    def fake_delete(client, nb, nid):
+        called["args"] = (nb, nid)
+        return {"deleted": nid}
+
+    monkeypatch.setattr(notes.notes_service, "delete_note", fake_delete)
+
+    result = notes.note(notebook_id="nb", action="delete", note_id="n1", confirm=True)
+    assert result["status"] == "success"
+    assert called["args"] == ("nb", "n1")
+
+
+def test_note_create_still_works_in_standard(monkeypatch):
+    """Non-destructive note actions remain available in standard mode."""
+    from notebooklm_tools.mcp.tools import notes
+
+    monkeypatch.setattr(tool_groups, "resolve_mode", lambda: "standard")
+    monkeypatch.setattr(notes, "get_client", lambda: object())
+    monkeypatch.setattr(
+        notes.notes_service,
+        "create_note",
+        lambda client, nb, content, title: {"id": "new"},
+    )
+
+    result = notes.note(notebook_id="nb", action="create", content="hi")
+    assert result["status"] == "success"
+
+
 def test_mode_exclusion_is_registration_level_not_env_gating():
     """A tool excluded by mode is never registered, regardless of env gating.
 

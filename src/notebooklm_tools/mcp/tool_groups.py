@@ -207,6 +207,20 @@ def resolve_mode() -> str:
     return get_config().tools.mode
 
 
+def deletion_allowed(mode: str | None = None) -> bool:
+    """Whether irreversible deletion sub-actions are permitted in *mode*.
+
+    Some consolidated tools (``note``, ``label``) stay registered in the
+    ``standard`` tier because their non-destructive actions (create, list,
+    rename, …) are normal writes — but their ``delete`` sub-action is dangerous.
+    Since gating happens per-tool at registration, those tools guard the delete
+    path at call time with this helper. Deletion is only allowed in ``full``.
+    """
+    if mode is None:
+        mode = resolve_mode()
+    return mode == MODE_FULL
+
+
 def _env_names(var: str) -> set[str]:
     raw = os.environ.get(var, "")
     return {part.strip() for part in raw.split(",") if part.strip()}

@@ -2,7 +2,13 @@
 
 from ...services import ServiceError, ValidationError
 from ...services import notes as notes_service
-from ._utils import ResultDict, error_result, get_client, logged_tool
+from ._utils import (
+    ResultDict,
+    deletion_blocked_result,
+    error_result,
+    get_client,
+    logged_tool,
+)
 
 
 @logged_tool()
@@ -46,6 +52,13 @@ def note(
             "status": "error",
             "error": f"Unknown action '{action}'. Valid actions: {', '.join(valid_actions)}",
         }
+
+    # Gate the dangerous delete sub-action by tools mode before any client/auth
+    # work: deletion is only permitted in 'full'.
+    if action == "delete":
+        blocked = deletion_blocked_result("Note")
+        if blocked is not None:
+            return blocked
 
     try:
         client = get_client()
