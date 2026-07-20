@@ -20,6 +20,7 @@ test suite to avoid touching the developer's real keyring).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -152,8 +153,18 @@ def _warn_plaintext_once() -> None:
 def write_secure_json(path: Path, obj: Any) -> None:
     """Write a JSON file, encrypted when a keyring-backed key is available.
 
-    Always creates the file with 0o600 permissions. Falls back to plaintext
-    with a loud (once-per-process) warning when no key is available.
+    The write is atomic: content goes to a sibling temp file created 0o600 with
+    O_EXCL, then os.replace() swaps it into place. A crash mid-write therefore
+    never leaves a truncated or partially written credential file — readers see
+    either the old file or the fully written new one.
+
+    Falls back to plaintext with a loud (once-per-process) warning when no key
+    is available.
+
+    Note: for the plaintext-to-encrypted migration, the previous cleartext file
+    is unlinked by os.replace, but its on-disk blocks may remain recoverable on
+    SSDs and journaling/copy-on-write filesystems. True secure erase is not
+    achievable from user space there; this is a known, accepted limitation.
     """
     key = get_encryption_key()
     if key is not None:
@@ -162,19 +173,35 @@ def write_secure_json(path: Path, obj: Any) -> None:
         _warn_plaintext_once()
         payload = obj
 
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    # Unique per-thread/process temp name so O_EXCL never collides with a
+    # concurrent writer or a stale temp from a previous crash.
+    tmp_path = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+
+    # O_EXCL: fail if the temp already exists (never follow/overwrite it).
+    fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        # O_CREAT mode only applies to new files; enforce 0o600 on
-        # pre-existing files too (e.g. plaintext-to-encrypted migration).
-        # fchmod is POSIX-only; Windows has no equivalent permission model.
+        # O_CREAT mode is masked by umask; force 0o600 explicitly. fchmod is
+        # POSIX-only; Windows has no equivalent permission model.
         if hasattr(os, "fchmod"):
             os.fchmod(fd, 0o600)
-        f = os.fdopen(fd, "w", encoding="utf-8")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
     except BaseException:
-        os.close(fd)
+        with contextlib.suppress(OSError):
+            os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
         raise
-    with f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    # Atomic swap into place (same directory → same filesystem).
+    try:
+        os.replace(tmp_path, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
 
 
 def read_secure_json(path: Path, *, migrate: bool = True) -> Any:

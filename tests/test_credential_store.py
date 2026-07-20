@@ -113,6 +113,42 @@ def test_write_plaintext_fallback_warns_once(tmp_path, without_key, caplog):
     assert json.loads(path.read_text()) == {"a": 2}
 
 
+def test_write_is_atomic_no_temp_left_behind(tmp_path, with_key):
+    path = tmp_path / "cookies.json"
+    write_secure_json(path, {"a": 1})
+    # No leftover temp files in the directory.
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name != "cookies.json"]
+    assert leftovers == []
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_write_overwrite_preserves_permissions_and_content(tmp_path, with_key):
+    path = tmp_path / "cookies.json"
+    write_secure_json(path, {"a": 1})
+    write_secure_json(path, {"a": 2})  # overwrite via atomic replace
+    assert read_secure_json(path) == {"a": 2}
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert [p.name for p in tmp_path.iterdir()] == ["cookies.json"]
+
+
+def test_write_failure_does_not_clobber_existing_file(tmp_path, with_key, monkeypatch):
+    """If serialization fails, the pre-existing file must stay intact."""
+    path = tmp_path / "cookies.json"
+    write_secure_json(path, {"good": 1})
+
+    # Make json.dump blow up mid-write.
+    def boom(*a, **k):
+        raise ValueError("kaboom")
+
+    monkeypatch.setattr(credential_store.json, "dump", boom)
+    with pytest.raises(ValueError):
+        write_secure_json(path, {"bad": 2})
+
+    # Original content preserved, no temp file left.
+    assert read_secure_json(path) == {"good": 1}
+    assert [p.name for p in tmp_path.iterdir()] == ["cookies.json"]
+
+
 def test_read_plaintext_without_key_returns_data(tmp_path, without_key):
     path = tmp_path / "cookies.json"
     path.write_text(json.dumps({"SID": "abc"}))
