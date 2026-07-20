@@ -13,6 +13,7 @@ import contextlib
 import json
 import os
 import platform
+import random
 import re
 import shutil
 import subprocess
@@ -239,12 +240,29 @@ def normalize_cdp_http_url(cdp_url: str) -> str:
     return f"http://{raw.rstrip('/')}"
 
 
-def find_available_port(starting_from: int = 9222, max_attempts: int = 10) -> int:
+# Dynamic/ephemeral port range (IANA). We start the debugging-port scan at a
+# random point here instead of the predictable 9222 so a local attacker cannot
+# assume where the DevTools port will be. This is defense-in-depth only — the
+# port is still discoverable (e.g. via /proc or netstat); the real protections
+# are loopback binding, the 0600 port map with ownership checks, and closing
+# the port immediately after extraction.
+_EPHEMERAL_PORT_MIN = 49152
+_EPHEMERAL_PORT_MAX = 65535
+
+
+def _random_ephemeral_start(max_attempts: int = 10) -> int:
+    """Pick a random start port in the ephemeral range, leaving room to scan."""
+    return random.randint(_EPHEMERAL_PORT_MIN, _EPHEMERAL_PORT_MAX - max_attempts)
+
+
+def find_available_port(starting_from: int | None = None, max_attempts: int = 10) -> int:
     """Find an available port for Chrome debugging.
 
     Args:
-        starting_from: Port to start scanning from
-        max_attempts: Number of ports to try
+        starting_from: Port to start scanning from. When None (the default), a
+            random port in the ephemeral range is chosen so the debugging port
+            is not predictable.
+        max_attempts: Number of consecutive ports to try.
 
     Returns:
         An available port number
@@ -253,6 +271,9 @@ def find_available_port(starting_from: int = 9222, max_attempts: int = 10) -> in
         RuntimeError: If no available ports found
     """
     import socket
+
+    if starting_from is None:
+        starting_from = _random_ephemeral_start(max_attempts)
 
     for offset in range(max_attempts):
         port = starting_from + offset
@@ -1317,7 +1338,17 @@ def extract_cookies_via_cdp(
             message=f"Cannot connect to browser on port {port}",
             hint=hint,
         )
-    result = extract_cookies_from_page(_cdp_http_base(port), wait_for_login, login_timeout)
+    try:
+        result = extract_cookies_from_page(_cdp_http_base(port), wait_for_login, login_timeout)
+    except BaseException:
+        # If this call launched Chrome, never leave its debugging port open on
+        # failure (e.g. login timeout). Only close browsers we started — a
+        # reused instance belongs to a prior session and is closed by whoever
+        # owns it. Defense-in-depth: CLI callers also close on their side.
+        if not reused_existing:
+            with contextlib.suppress(Exception):
+                terminate_chrome(port=port)
+        raise
     result["reused_existing"] = reused_existing
     return result
 

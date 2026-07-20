@@ -318,6 +318,41 @@ nlm login --manual     # Manual file mode
 
 For detailed instructions and troubleshooting, see **[docs/AUTHENTICATION.md](docs/AUTHENTICATION.md)**.
 
+### CDP security model
+
+Auto-mode login launches a browser with Chrome's DevTools Protocol (CDP) enabled
+on a local `--remote-debugging-port`. That is how cookies are extracted without
+touching the OS keychain. The trade-off: **while that port is open, any process
+running as your user on the same machine can connect to it over CDP and read the
+same Google session cookies** the tool reads.
+
+What the tool does to keep that window small:
+
+- **Loopback only.** The debugging port is bound to `127.0.0.1`, never a
+  network-facing interface.
+- **Unpredictable port.** The port is chosen at random from the ephemeral range
+  instead of the well-known `9222`, so it can't be assumed by another process.
+- **Ownership-checked reuse.** The port-to-profile map is stored `0600` and every
+  reused instance is verified (via its command line) to belong to the requested
+  profile before any cookie is read; it fails closed if it can't verify.
+- **Close immediately.** The launched browser is terminated as soon as cookies
+  are extracted — and also on failure (including login timeout), so a failed or
+  abandoned login never leaves the port open.
+- **Bounded login wait.** Interactive sign-in has a timeout (`--login-timeout`,
+  default 300s, or `NLM_LOGIN_TIMEOUT`); when it elapses the browser is closed
+  and the command aborts instead of waiting forever.
+
+Residual risk that cannot be fully removed:
+
+- During interactive sign-in the port is necessarily open for as long as you take
+  to log in. Keep that window short, and only log in on a machine whose local
+  processes you trust.
+- The headless refresh path opens a short-lived debugging port (seconds) that is
+  closed immediately after token extraction.
+- With `--provider openclaw`/`--cdp-url`, the browser is managed **externally**;
+  the tool connects to it but never launches or closes it, so its exposure window
+  is entirely up to whoever runs that browser.
+
 ## MCP Configuration
 
 > **⚠️ Context Window Warning:** This MCP provides **39 tools**. Disable it when not using NotebookLM to preserve context. In Claude Code: `@notebooklm-mcp` to toggle. To keep it on but expose only a subset, see [Selective tool exposure](docs/MCP_GUIDE.md#selective-tool-exposure).

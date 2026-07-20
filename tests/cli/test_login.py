@@ -90,6 +90,50 @@ def test_login_force_bypasses_saved_profile_validation(monkeypatch, tmp_path):
     assert "Successfully authenticated!" in result.output
 
 
+def test_login_closes_chrome_when_saving_fails(monkeypatch, tmp_path):
+    """The launched Chrome must be closed even if saving the profile fails.
+
+    Covers the CLI-side safety net (finally): extraction succeeds and
+    launched_local_chrome becomes True, then save_profile raises — the
+    debugging port must not be left open.
+    """
+    from notebooklm_tools.core.exceptions import NLMError
+
+    terminate_calls = []
+
+    class FailingSaveAuth(FakeAuthManager):
+        def save_profile(self, **kwargs):
+            raise NLMError(message="disk full")
+
+    monkeypatch.setattr("notebooklm_tools.core.auth.AuthManager", FailingSaveAuth)
+    monkeypatch.setattr("notebooklm_tools.utils.cdp.get_chrome_path", lambda: "chrome")
+    monkeypatch.setattr("notebooklm_tools.utils.cdp.get_browser_display_name", lambda: "Chrome")
+    monkeypatch.setattr(
+        "notebooklm_tools.utils.cdp.terminate_chrome",
+        lambda *a, **k: terminate_calls.append(True) or True,
+    )
+    monkeypatch.setattr(
+        "notebooklm_tools.utils.cdp.extract_cookies_via_cdp",
+        lambda **kwargs: {
+            "cookies": {"SID": "sid"},
+            "csrf_token": "csrf",
+            "session_id": "session",
+            "email": "user@example.com",
+            "build_label": "build",
+        },
+    )
+    monkeypatch.setattr("notebooklm_tools.utils.config.get_storage_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "notebooklm_tools.utils.config.check_migration_sources",
+        lambda: {"chrome_profiles": []},
+    )
+
+    result = CliRunner().invoke(app, ["login", "--profile", "KS", "--force"])
+
+    assert result.exit_code == 1
+    assert terminate_calls, "Chrome must be closed even when saving the profile fails"
+
+
 class CheckAuthManager(FakeAuthManager):
     """AuthManager whose check_validity returns a preconfigured result."""
 
