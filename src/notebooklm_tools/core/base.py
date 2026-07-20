@@ -39,6 +39,7 @@ from .utils import (
     _decode_request_body,
     _format_debug_json,
     _parse_url_params,
+    _redact_sensitive,
 )
 
 # Configure logger (API internals only logged at DEBUG level, usually disabled)
@@ -886,7 +887,7 @@ class BaseClient:
                 logger.debug(f"Response Status: {response.status_code}")
                 logger.debug(
                     "Raw response (first 2000 chars): %s",
-                    response.text[:2000] if response.text else "(empty)",
+                    _redact_sensitive(response.text[:2000]) if response.text else "(empty)",
                 )
                 logger.debug("=" * 70)
 

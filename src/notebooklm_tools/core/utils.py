@@ -1,6 +1,7 @@
 """Utility functions for NotebookLM API client."""
 
 import json
+import re
 import urllib.parse
 from datetime import UTC, datetime
 from typing import Any
@@ -44,6 +45,35 @@ RPC_NAMES = {
     "le8sX": "label_mutate",
     "GyzE7e": "label_delete",
 }
+
+
+# Patterns that carry the CSRF/session token in NotebookLM page and RPC
+# responses. Redacted before any debug logging so enabling --debug never
+# writes a live token to disk. Mirrors the request-side "at=" redaction in
+# _decode_request_body.
+_SENSITIVE_RESPONSE_PATTERNS = [
+    # "SNlM0e":"<csrf>"  and  "FdrFJe":"<session>"  (JSON-embedded WIZ data)
+    re.compile(r'("(?:SNlM0e|FdrFJe)"\s*:\s*")[^"]+(")'),
+    # at=<csrf> in a URL-encoded / form body echoed back in a response
+    re.compile(r"(\bat=)[^&\"\s]+"),
+]
+
+
+def _redact_sensitive(text: str) -> str:
+    """Mask CSRF/session tokens in text destined for debug logs."""
+    if not text:
+        return text
+    redacted = text
+    for pattern in _SENSITIVE_RESPONSE_PATTERNS:
+        redacted = pattern.sub(
+            lambda m: (
+                (m.group(1) + "[REDACTED]" + m.group(2))
+                if m.lastindex and m.lastindex >= 2
+                else (m.group(1) + "[REDACTED]")
+            ),
+            redacted,
+        )
+    return redacted
 
 
 def _format_debug_json(data: Any, max_length: int = 2000) -> str:

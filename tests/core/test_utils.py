@@ -1,9 +1,36 @@
 from notebooklm_tools.core.utils import (
     RPC_NAMES,
+    _redact_sensitive,
     extract_cookies_from_chrome_export,
     is_mind_map_json,
     parse_timestamp,
 )
+
+
+def test_redact_sensitive_masks_csrf_in_response_body():
+    csrf = "AOjM3k9_SECRET_TOKEN_value123"
+    body = f'window.WIZ_global_data = {{"SNlM0e":"{csrf}","cfb2h":"boq_x"}};'
+    redacted = _redact_sensitive(body)
+    assert csrf not in redacted
+    assert "[REDACTED]" in redacted
+    # Non-sensitive fields survive.
+    assert "cfb2h" in redacted
+
+
+def test_redact_sensitive_masks_session_and_at_token():
+    session = "1234567890ABC"
+    at = "csrf_at_value_xyz"
+    body = f'[["wrb.fr"]] "FdrFJe":"{session}" ... at={at}&foo=bar'
+    redacted = _redact_sensitive(body)
+    assert session not in redacted
+    assert at not in redacted
+    assert redacted.count("[REDACTED]") >= 2
+    assert "foo=bar" in redacted  # unrelated data preserved
+
+
+def test_redact_sensitive_noop_on_clean_text():
+    assert _redact_sensitive("no secrets here") == "no secrets here"
+    assert _redact_sensitive("") == ""
 
 
 def test_parse_timestamp_valid():
