@@ -144,6 +144,28 @@ def _print_tools_mode_banner() -> None:
         msg += " Set NLM_TOOLS_MODE=full to enable sharing/deletion tools."
     print(msg, file=sys.stderr)
 
+    _print_encryption_warning()
+
+
+def _print_encryption_warning() -> None:
+    """Warn prominently at startup if credentials would be stored in plaintext."""
+    try:
+        from notebooklm_tools.utils.credential_store import plaintext_fallback_active
+    except Exception:
+        return
+
+    if plaintext_fallback_active():
+        print(
+            "\n"
+            "  ******************************************************************\n"
+            "  * WARNING: system keyring unavailable — Google session cookies   *\n"
+            "  * will be stored in PLAINTEXT under ~/.notebooklm-mcp-cli.        *\n"
+            "  * Anyone with read access to those files can use your session.    *\n"
+            "  * Set NLM_REQUIRE_ENCRYPTION=1 to fail closed instead.            *\n"
+            "  ******************************************************************\n",
+            file=sys.stderr,
+        )
+
 
 # Register tools on import
 _register_tools()

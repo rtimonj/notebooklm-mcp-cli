@@ -431,6 +431,13 @@ class AuthConfig(BaseModel):
         description=("Browser for auth: auto, chrome, arc, brave, edge, chromium, vivaldi, opera"),
     )
     default_profile: str = Field(default="default", description="Default profile name")
+    require_encryption: bool = Field(
+        default=False,
+        description=(
+            "When true, credential writes fail closed (raise) if the system "
+            "keyring is unavailable, instead of falling back to plaintext."
+        ),
+    )
 
 
 class ToolsConfig(BaseModel):
@@ -492,6 +499,18 @@ def load_config() -> Config:
     if tools_mode := os.environ.get("NLM_TOOLS_MODE"):
         config_data.setdefault("tools", {})["mode"] = tools_mode
 
+    if (raw_require_enc := os.environ.get("NLM_REQUIRE_ENCRYPTION")) is not None:
+        config_data.setdefault("auth", {})["require_encryption"] = (
+            raw_require_enc.strip().lower()
+            not in {
+                "",
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+        )
+
     return Config(**config_data)
 
 
@@ -518,6 +537,7 @@ def _config_to_toml(config: Config) -> str:
     lines.append("[auth]")
     lines.append(f'browser = "{config.auth.browser}"')
     lines.append(f'default_profile = "{config.auth.default_profile}"')
+    lines.append(f"require_encryption = {'true' if config.auth.require_encryption else 'false'}")
     lines.append("")
 
     lines.append("[tools]")

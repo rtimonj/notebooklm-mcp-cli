@@ -149,6 +149,54 @@ def test_write_failure_does_not_clobber_existing_file(tmp_path, with_key, monkey
     assert [p.name for p in tmp_path.iterdir()] == ["cookies.json"]
 
 
+def test_write_fails_closed_when_encryption_required(tmp_path, without_key, monkeypatch):
+    monkeypatch.setattr(credential_store, "_require_encryption", lambda: True)
+    path = tmp_path / "cookies.json"
+    with pytest.raises(CredentialStoreError, match="Encryption is required"):
+        write_secure_json(path, {"SID": "x"})
+    assert not path.exists()  # nothing written
+
+
+def test_write_degrades_with_warning_when_not_required(tmp_path, without_key, monkeypatch, caplog):
+    monkeypatch.setattr(credential_store, "_require_encryption", lambda: False)
+    credential_store.reset_cache()
+    path = tmp_path / "cookies.json"
+    with caplog.at_level(logging.WARNING, logger="notebooklm_tools.utils.credential_store"):
+        write_secure_json(path, {"SID": "x"})
+    assert path.exists()
+    assert not is_encrypted(json.loads(path.read_text()))
+    assert any("PLAINTEXT" in r.getMessage() for r in caplog.records)
+
+
+def test_require_encryption_env_wiring(tmp_path, monkeypatch):
+    """NLM_REQUIRE_ENCRYPTION flows through config into _require_encryption()."""
+    from notebooklm_tools.utils import config as cfg
+
+    monkeypatch.setenv("NOTEBOOKLM_MCP_CLI_PATH", str(tmp_path / "storage"))
+    monkeypatch.setenv("NLM_REQUIRE_ENCRYPTION", "1")
+    cfg.reset_config()
+    assert credential_store._require_encryption() is True
+
+    monkeypatch.setenv("NLM_REQUIRE_ENCRYPTION", "0")
+    cfg.reset_config()
+    assert credential_store._require_encryption() is False
+    cfg.reset_config()
+
+
+def test_plaintext_fallback_active(monkeypatch):
+    monkeypatch.delenv(credential_store.DISABLE_ENCRYPTION_ENV, raising=False)
+    monkeypatch.setattr(credential_store, "get_encryption_key", lambda: None)
+    assert credential_store.plaintext_fallback_active() is True
+
+    monkeypatch.setattr(credential_store, "get_encryption_key", lambda: b"key")
+    assert credential_store.plaintext_fallback_active() is False
+
+    # Explicit opt-out is not an unexpected downgrade → no warning.
+    monkeypatch.setattr(credential_store, "get_encryption_key", lambda: None)
+    monkeypatch.setenv(credential_store.DISABLE_ENCRYPTION_ENV, "1")
+    assert credential_store.plaintext_fallback_active() is False
+
+
 def test_read_plaintext_without_key_returns_data(tmp_path, without_key):
     path = tmp_path / "cookies.json"
     path.write_text(json.dumps({"SID": "abc"}))

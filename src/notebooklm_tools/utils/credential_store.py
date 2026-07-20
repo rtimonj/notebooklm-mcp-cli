@@ -51,6 +51,32 @@ class CredentialStoreError(Exception):
     """Raised when an encrypted credential file cannot be decrypted."""
 
 
+def _require_encryption() -> bool:
+    """Whether credential writes must fail closed when no keyring key exists.
+
+    Sourced from config (``auth.require_encryption``), which already applies the
+    NLM_REQUIRE_ENCRYPTION env override. Defaults to False on any lookup error
+    so a broken config never blocks the credential path unexpectedly.
+    """
+    try:
+        from notebooklm_tools.utils.config import get_config
+
+        return bool(get_config().auth.require_encryption)
+    except Exception:
+        return False
+
+
+def plaintext_fallback_active() -> bool:
+    """True when credentials would currently be written in plaintext.
+
+    That is: encryption is not explicitly disabled, yet no keyring key is
+    available. Used to surface a visible warning at MCP server startup.
+    """
+    if os.environ.get(DISABLE_ENCRYPTION_ENV):
+        return False  # user explicitly opted out; not an unexpected downgrade
+    return get_encryption_key() is None
+
+
 def reset_cache() -> None:
     """Reset cached key and warning state (for tests)."""
     global _cached_key, _key_lookup_done, _plaintext_warning_emitted
@@ -169,6 +195,15 @@ def write_secure_json(path: Path, obj: Any) -> None:
     key = get_encryption_key()
     if key is not None:
         payload: Any = encrypt_payload(obj, key)
+    elif _require_encryption():
+        # Fail closed: never silently downgrade to plaintext when the operator
+        # has demanded encryption.
+        raise CredentialStoreError(
+            f"Encryption is required (auth.require_encryption / {DISABLE_ENCRYPTION_ENV} "
+            "unset) but the system keyring is unavailable, so credentials were NOT "
+            "written. Run from a desktop session with a working keyring, or unset "
+            "require_encryption to allow plaintext storage."
+        )
     else:
         _warn_plaintext_once()
         payload = obj
