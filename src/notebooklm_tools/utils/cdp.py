@@ -626,7 +626,10 @@ def _get_cmdline_flag_value(cmdline: str, flag: str) -> str | None:
 def _mapped_chrome_owns_profile(pid: int | None, profile_name: str, port: int) -> bool:
     """Return True when the mapped PID was launched with this profile's user-data-dir."""
     if pid is None:
-        return True
+        # Fail closed: a legitimate port-map entry always carries the launching
+        # pid (written by _write_port_map). A pid-less entry is corrupt, legacy,
+        # or tampered — never trust it to identify a profile-owned browser.
+        return False
 
     chrome_path = get_chrome_path()
     if chrome_path:

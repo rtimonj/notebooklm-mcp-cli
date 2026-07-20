@@ -190,6 +190,26 @@ def test_mapped_chrome_owns_profile_fails_closed_when_cmdline_unavailable(tmp_pa
         assert cdp._mapped_chrome_owns_profile(1234, "default", 9222) is False
 
 
+def test_mapped_chrome_owns_profile_fails_closed_when_pid_missing():
+    """A port-map entry without a pid is corrupt/legacy — never trust it."""
+    # No process lookup should even be attempted; a plain False is expected.
+    assert cdp._mapped_chrome_owns_profile(None, "default", 9222) is False
+
+
+def test_find_existing_nlm_chrome_ignores_entry_without_pid(storage_dir):
+    """A responsive mapped port with no pid must not be reused (fail closed)."""
+    _write_port_map(storage_dir, {"9222": {"profile": "default"}})  # pid missing
+    version = {
+        "webSocketDebuggerUrl": "ws://127.0.0.1:9222/devtools/browser/abc",
+        "User-Agent": "Mozilla/5.0 Chrome/124",
+    }
+
+    with patch.object(cdp, "_fetch_cdp_version", return_value=version):
+        port, url = cdp.find_existing_nlm_chrome(profile_name="default")
+
+    assert (port, url) == (None, None)
+
+
 def test_mapped_chrome_owns_profile_rejects_pid_on_wrong_debug_port(tmp_path, monkeypatch):
     profile_dir = tmp_path / "nlm-profile"
     profile_dir.mkdir()
