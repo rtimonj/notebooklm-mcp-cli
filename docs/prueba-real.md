@@ -504,9 +504,12 @@ Solución en [Despliegue con un cliente MCP](#despliegue-con-un-cliente-mcp-requ
 ```
 
   El upstream ya va por **0.9.4** y el fork partió de **0.8.9**, así que hay
-  bastante que integrar. Resolver conflictos es buena tarea para Claude Code.
-  Recuerda: **nunca** `uv tool upgrade`, que sustituiría el fork por la versión
-  oficial sin parches.
+  bastante que integrar. Recuerda: **nunca** `uv tool upgrade`, que sustituiría el
+  fork por la versión oficial sin parches.
+
+  > **No improvises este merge.** El procedimiento completo, con la auditoría
+  > post-merge que evita que una tool nueva de upstream quede expuesta por defecto,
+  > está en [`sincronizar-upstream.md`](./sincronizar-upstream.md).
 - **Contribuir upstream (opcional):** abrir PRs al proyecto original con los
   parches de seguridad (el 1 y el 3 especialmente). Si el mantenedor los acepta,
   dejas de necesitar mantener el fork. Decisión aparte, se revisa antes.
