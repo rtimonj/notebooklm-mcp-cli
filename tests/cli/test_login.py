@@ -134,6 +134,48 @@ def test_login_closes_chrome_when_saving_fails(monkeypatch, tmp_path):
     assert terminate_calls, "Chrome must be closed even when saving the profile fails"
 
 
+def test_login_formats_credential_store_error_without_traceback(monkeypatch, tmp_path):
+    """CredentialStoreError must render as a clean CLI error, not a traceback.
+
+    Happens for real when require_encryption is on and the keyring is missing.
+    """
+    from notebooklm_tools.utils.credential_store import CredentialStoreError
+
+    class FailingStoreAuth(FakeAuthManager):
+        def save_profile(self, **kwargs):
+            raise CredentialStoreError("Encryption is required by auth.require_encryption")
+
+    monkeypatch.setattr("notebooklm_tools.core.auth.AuthManager", FailingStoreAuth)
+    monkeypatch.setattr("notebooklm_tools.utils.cdp.get_chrome_path", lambda: "chrome")
+    monkeypatch.setattr("notebooklm_tools.utils.cdp.get_browser_display_name", lambda: "Chrome")
+    monkeypatch.setattr("notebooklm_tools.utils.cdp.terminate_chrome", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "notebooklm_tools.utils.cdp.extract_cookies_via_cdp",
+        lambda **kwargs: {
+            "cookies": {"SID": "sid"},
+            "csrf_token": "csrf",
+            "session_id": "session",
+            "email": "user@example.com",
+            "build_label": "build",
+        },
+    )
+    monkeypatch.setattr("notebooklm_tools.utils.config.get_storage_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "notebooklm_tools.utils.config.check_migration_sources",
+        lambda: {"chrome_profiles": []},
+    )
+
+    result = CliRunner().invoke(app, ["login", "--profile", "KS", "--force"])
+
+    assert result.exit_code == 1
+    assert "Error:" in result.output
+    assert "Encryption is required" in result.output
+    assert "credentials were NOT saved" in result.output
+    # The whole point: no raw Python traceback leaked to the user.
+    assert "Traceback (most recent call last)" not in result.output
+    assert "CredentialStoreError" not in result.output
+
+
 class CheckAuthManager(FakeAuthManager):
     """AuthManager whose check_validity returns a preconfigured result."""
 

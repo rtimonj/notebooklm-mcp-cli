@@ -14,8 +14,18 @@ writes stay plaintext and a warning is logged ONCE per process — never a silen
 downgrade. Reading an encrypted file without keyring access raises
 ``CredentialStoreError`` with a actionable message.
 
-Set ``NOTEBOOKLM_DISABLE_ENCRYPTION=1`` to force plaintext storage (used by the
-test suite to avoid touching the developer's real keyring).
+``NOTEBOOKLM_DISABLE_ENCRYPTION=1`` forces plaintext storage so the test suite
+never touches the developer's real keyring. It is a **test-only** hook: it is
+honored only when running under pytest (``PYTEST_CURRENT_TEST`` present in the
+environment). Set outside a test run it is IGNORED and logged as a warning,
+because otherwise any parent process, shell profile or MCP client config could
+silently downgrade credential storage to cleartext *and* mute the warnings meant
+to surface that downgrade.
+
+``auth.require_encryption`` (env ``NLM_REQUIRE_ENCRYPTION``) always wins: when it
+is set, credentials are never written in cleartext — a missing keyring, or a
+contradictory ``NOTEBOOKLM_DISABLE_ENCRYPTION``, raises ``CredentialStoreError``
+instead of writing.
 """
 
 from __future__ import annotations
@@ -35,11 +45,16 @@ KEYRING_KEY_NAME = "credentials-encryption-key"
 ENVELOPE_MARKER = "__nlm_encrypted__"
 DISABLE_ENCRYPTION_ENV = "NOTEBOOKLM_DISABLE_ENCRYPTION"
 
+# pytest sets this per-test in os.environ, so it is also inherited by any
+# subprocess a test spawns. It is our marker for "running under the test suite".
+TEST_CONTEXT_ENV = "PYTEST_CURRENT_TEST"
+
 # Module-level caches: keyring lookups go over DBus, so avoid one roundtrip
 # per credential read. reset_cache() restores a clean state for tests.
 _cached_key: bytes | None = None
 _key_lookup_done = False
 _plaintext_warning_emitted = False
+_ignored_disable_warning_emitted = False
 
 # Serializes first-use key generation so concurrent callers (the MCP server is
 # multi-threaded) cannot each generate a different key and clobber each other's
@@ -49,6 +64,39 @@ _key_lock = threading.Lock()
 
 class CredentialStoreError(Exception):
     """Raised when an encrypted credential file cannot be decrypted."""
+
+
+def _in_test_context() -> bool:
+    """True when running under pytest (in-process or in a spawned subprocess)."""
+    return TEST_CONTEXT_ENV in os.environ
+
+
+def encryption_disabled_by_env() -> bool:
+    """Whether the test-only plaintext override is active AND honored.
+
+    ``NOTEBOOKLM_DISABLE_ENCRYPTION`` is honored only inside a test run. Outside
+    one it is ignored — and warned about loudly, once per process — so that an
+    inherited environment variable cannot quietly turn off encryption-at-rest
+    while also muting the plaintext warnings.
+    """
+    global _ignored_disable_warning_emitted
+
+    if not os.environ.get(DISABLE_ENCRYPTION_ENV):
+        return False
+
+    if _in_test_context():
+        return True
+
+    if not _ignored_disable_warning_emitted:
+        _ignored_disable_warning_emitted = True
+        logger.warning(
+            f"IGNORING {DISABLE_ENCRYPTION_ENV}: it is a test-only override and is "
+            "not honored outside a test run. Credentials will still be encrypted "
+            "whenever the system keyring is available. Unset it to silence this "
+            "warning; to allow cleartext storage, run without a keyring and leave "
+            "auth.require_encryption off."
+        )
+    return False
 
 
 def _require_encryption() -> bool:
@@ -72,17 +120,19 @@ def plaintext_fallback_active() -> bool:
     That is: encryption is not explicitly disabled, yet no keyring key is
     available. Used to surface a visible warning at MCP server startup.
     """
-    if os.environ.get(DISABLE_ENCRYPTION_ENV):
-        return False  # user explicitly opted out; not an unexpected downgrade
+    if encryption_disabled_by_env():
+        return False  # explicit (test-only) opt-out; not an unexpected downgrade
     return get_encryption_key() is None
 
 
 def reset_cache() -> None:
     """Reset cached key and warning state (for tests)."""
     global _cached_key, _key_lookup_done, _plaintext_warning_emitted
+    global _ignored_disable_warning_emitted
     _cached_key = None
     _key_lookup_done = False
     _plaintext_warning_emitted = False
+    _ignored_disable_warning_emitted = False
 
 
 def get_encryption_key() -> bytes | None:
@@ -93,7 +143,7 @@ def get_encryption_key() -> bytes | None:
     """
     global _cached_key, _key_lookup_done
 
-    if os.environ.get(DISABLE_ENCRYPTION_ENV):
+    if encryption_disabled_by_env():
         return None
 
     # Fast path: lookup already done, no lock needed.
@@ -163,10 +213,10 @@ def _warn_plaintext_once() -> None:
     global _plaintext_warning_emitted
     if not _plaintext_warning_emitted:
         _plaintext_warning_emitted = True
-        if os.environ.get(DISABLE_ENCRYPTION_ENV):
+        if encryption_disabled_by_env():
             logger.info(
-                f"Credential encryption disabled via {DISABLE_ENCRYPTION_ENV}; "
-                "storing credentials in plaintext."
+                f"Credential encryption disabled via {DISABLE_ENCRYPTION_ENV} "
+                "(test-only override); storing credentials in plaintext."
             )
         else:
             logger.warning(
@@ -196,13 +246,22 @@ def write_secure_json(path: Path, obj: Any) -> None:
     if key is not None:
         payload: Any = encrypt_payload(obj, key)
     elif _require_encryption():
-        # Fail closed: never silently downgrade to plaintext when the operator
-        # has demanded encryption.
+        # Fail closed: never downgrade to cleartext when encryption is required.
+        # require_encryption always wins, including over the test-only override.
+        if encryption_disabled_by_env():
+            raise CredentialStoreError(
+                "Contradictory configuration: auth.require_encryption (or "
+                f"NLM_REQUIRE_ENCRYPTION) demands encryption, but {DISABLE_ENCRYPTION_ENV} "
+                "asks for cleartext storage. Encryption wins, so credentials were NOT "
+                f"written. Unset {DISABLE_ENCRYPTION_ENV}, or turn off require_encryption "
+                "if you really want cleartext."
+            )
         raise CredentialStoreError(
-            f"Encryption is required (auth.require_encryption / {DISABLE_ENCRYPTION_ENV} "
-            "unset) but the system keyring is unavailable, so credentials were NOT "
-            "written. Run from a desktop session with a working keyring, or unset "
-            "require_encryption to allow plaintext storage."
+            "Encryption is required by auth.require_encryption (or "
+            "NLM_REQUIRE_ENCRYPTION), but the system keyring is unavailable, so "
+            "credentials were NOT written. Run from a desktop session with a working "
+            "keyring (Secret Service/DBus), or turn off require_encryption to allow "
+            "cleartext storage."
         )
     else:
         _warn_plaintext_once()
@@ -267,9 +326,9 @@ def read_secure_json(path: Path, *, migrate: bool = True) -> Any:
     key = get_encryption_key()
     if key is None:
         raise CredentialStoreError(
-            f"Credential file {path} is encrypted but the system keyring is "
-            "unavailable (no Secret Service/DBus session?). Run from a desktop "
-            "session, or re-authenticate with 'nlm login' after setting "
-            f"{DISABLE_ENCRYPTION_ENV}=1 to use plaintext storage."
+            f"Credential file {path} is encrypted but the system keyring holding its "
+            "key is unavailable (no Secret Service/DBus session?). Run from a desktop "
+            "session so the key can be read, or delete this profile and re-run "
+            "'nlm login' to create fresh credentials."
         )
     return decrypt_payload(data, key)

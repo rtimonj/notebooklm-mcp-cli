@@ -265,6 +265,7 @@ def login_callback(
     from notebooklm_tools.core.exceptions import AccountMismatchError, NLMError
     from notebooklm_tools.services.auth import AuthManager
     from notebooklm_tools.utils.config import get_config
+    from notebooklm_tools.utils.credential_store import CredentialStoreError
 
     # If a subcommand is invoked, don't run login logic
     if ctx.invoked_subcommand is not None:
@@ -609,6 +610,12 @@ def login_callback(
                 if retry_err.hint:
                     console.print(f"\n[dim]Hint: {retry_err.hint}[/dim]")
                 raise typer.Exit(1) from retry_err
+            except CredentialStoreError as retry_err:
+                # Raised inside an except block, so the outer handler below
+                # cannot catch it — format it here too.
+                console.print(f"\n[red]Error on retry:[/red] {retry_err}")
+                console.print("\n[dim]Hint: credentials were NOT saved.[/dim]")
+                raise typer.Exit(1) from retry_err
         else:
             console.print(f"\n[red]Error:[/red] {e.message}")
             console.print(f"\n[yellow]Hint:[/yellow] {e.hint}")
@@ -617,6 +624,16 @@ def login_callback(
         console.print(f"\n[red]Error:[/red] {e.message}")
         if e.hint:
             console.print(f"\n[dim]Hint: {e.hint}[/dim]")
+        raise typer.Exit(1) from e
+    except CredentialStoreError as e:
+        # Credentials could not be stored (e.g. require_encryption with no
+        # keyring). Not an NLMError, so format it here instead of letting a
+        # raw traceback reach the user.
+        console.print(f"\n[red]Error:[/red] {e}")
+        console.print(
+            "\n[dim]Hint: credentials were NOT saved. Fix the keyring or the "
+            "encryption settings above and run 'nlm login' again.[/dim]"
+        )
         raise typer.Exit(1) from e
     finally:
         # Safety net: never leave a launched Chrome's debugging port open,

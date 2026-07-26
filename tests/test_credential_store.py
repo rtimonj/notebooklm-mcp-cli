@@ -197,6 +197,129 @@ def test_plaintext_fallback_active(monkeypatch):
     assert credential_store.plaintext_fallback_active() is False
 
 
+# ---------------------------------------------------------------------------
+# NOTEBOOKLM_DISABLE_ENCRYPTION is a test-only override
+#
+# Regression tests for the audit finding: the env var used to be honored in any
+# context, which both forced cleartext storage AND muted the two warnings meant
+# to surface that downgrade (INFO instead of WARNING, and a suppressed MCP
+# startup banner).
+# ---------------------------------------------------------------------------
+
+
+class _WorkingKeyring:
+    """Keyring that hands out a stable key."""
+
+    _KEY = Fernet.generate_key().decode("ascii")
+
+    @staticmethod
+    def get_password(service, name):
+        return _WorkingKeyring._KEY
+
+    @staticmethod
+    def set_password(service, name, value):  # pragma: no cover - not reached
+        pass
+
+
+def _leave_test_context(monkeypatch):
+    """Simulate running outside pytest (no PYTEST_CURRENT_TEST in the env).
+
+    Must be called from the test body, not a fixture: pytest re-sets
+    PYTEST_CURRENT_TEST when the ``call`` phase begins, which would undo a
+    deletion performed during ``setup``.
+    """
+    monkeypatch.delenv(credential_store.TEST_CONTEXT_ENV, raising=False)
+    credential_store.reset_cache()
+    assert credential_store._in_test_context() is False
+
+
+def test_disable_env_honored_inside_test_context(monkeypatch, tmp_path):
+    """The suite relies on the override working while under pytest."""
+    monkeypatch.setenv(credential_store.DISABLE_ENCRYPTION_ENV, "1")
+    credential_store.reset_cache()
+
+    assert credential_store._in_test_context() is True
+    assert credential_store.encryption_disabled_by_env() is True
+    assert credential_store.get_encryption_key() is None
+
+    path = tmp_path / "cookies.json"
+    write_secure_json(path, {"SID": "x"})
+    assert not is_encrypted(json.loads(path.read_text()))
+
+
+def test_disable_env_ignored_outside_test_context(monkeypatch, caplog):
+    """Outside a test run the override must be ignored and warned about."""
+    monkeypatch.setenv(credential_store.DISABLE_ENCRYPTION_ENV, "1")
+    _leave_test_context(monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger="notebooklm_tools.utils.credential_store"):
+        assert credential_store.encryption_disabled_by_env() is False
+
+    assert any("IGNORING" in r.getMessage() for r in caplog.records)
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_disable_env_outside_test_context_still_encrypts(monkeypatch, tmp_path):
+    """The core fix: with a working keyring, the override cannot force cleartext."""
+    monkeypatch.setenv(credential_store.DISABLE_ENCRYPTION_ENV, "1")
+    monkeypatch.setitem(__import__("sys").modules, "keyring", _WorkingKeyring)
+    _leave_test_context(monkeypatch)
+
+    path = tmp_path / "cookies.json"
+    write_secure_json(path, {"SID": "SECRET-VALUE"})
+
+    on_disk = json.loads(path.read_text())
+    assert is_encrypted(on_disk), "override must not defeat encryption outside tests"
+    assert "SECRET-VALUE" not in path.read_text()
+
+
+def test_disable_env_outside_test_context_does_not_mute_banner(monkeypatch, caplog):
+    """The MCP startup banner must still fire, and the downgrade log stay WARNING."""
+    monkeypatch.setenv(credential_store.DISABLE_ENCRYPTION_ENV, "1")
+    _leave_test_context(monkeypatch)
+    monkeypatch.setattr(credential_store, "get_encryption_key", lambda: None)
+
+    # Banner signal restored (used by mcp/server.py).
+    assert credential_store.plaintext_fallback_active() is True
+
+    # And the downgrade itself is logged at WARNING, not the muted INFO.
+    with caplog.at_level(logging.DEBUG, logger="notebooklm_tools.utils.credential_store"):
+        credential_store._warn_plaintext_once()
+    downgrade = [r for r in caplog.records if "PLAINTEXT" in r.getMessage()]
+    assert downgrade, "plaintext downgrade must be logged"
+    assert downgrade[0].levelname == "WARNING"
+
+
+def test_require_encryption_wins_over_disable_env(monkeypatch, tmp_path):
+    """Contradictory config: require_encryption wins and nothing is written."""
+    monkeypatch.setenv(credential_store.DISABLE_ENCRYPTION_ENV, "1")
+    monkeypatch.setattr(credential_store, "_require_encryption", lambda: True)
+    credential_store.reset_cache()
+
+    # In-test context the override is honored, so this is a genuine contradiction.
+    assert credential_store.encryption_disabled_by_env() is True
+
+    path = tmp_path / "cookies.json"
+    with pytest.raises(CredentialStoreError, match="Contradictory configuration"):
+        write_secure_json(path, {"SID": "SECRET-VALUE"})
+
+    assert not path.exists(), "nothing may be written when encryption is required"
+
+
+def test_require_encryption_error_message_is_unambiguous(monkeypatch, tmp_path):
+    """The keyring-unavailable message must not mention the test-only var."""
+    monkeypatch.delenv(credential_store.DISABLE_ENCRYPTION_ENV, raising=False)
+    monkeypatch.setattr(credential_store, "get_encryption_key", lambda: None)
+    monkeypatch.setattr(credential_store, "_require_encryption", lambda: True)
+
+    with pytest.raises(CredentialStoreError) as exc:
+        write_secure_json(tmp_path / "cookies.json", {"SID": "x"})
+
+    msg = str(exc.value)
+    assert "keyring is unavailable" in msg
+    assert credential_store.DISABLE_ENCRYPTION_ENV not in msg, "confusing hint removed"
+
+
 def test_read_plaintext_without_key_returns_data(tmp_path, without_key):
     path = tmp_path / "cookies.json"
     path.write_text(json.dumps({"SID": "abc"}))
